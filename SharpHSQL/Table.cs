@@ -40,7 +40,7 @@ using System.Collections;
  *
  * C# port by Mark Tutt
  * C# SharpHsql by Andrés G Vettori.
- * http://workspaces.gotdotnet.com/sharphsql
+ * https://github.com/andresvettori/sharphsql
  */
 #endregion
 

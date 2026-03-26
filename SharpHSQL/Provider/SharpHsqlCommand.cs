@@ -44,8 +44,8 @@ using System.Globalization;
  *
  * This package is based on HypersonicSQL, originally developed by Thomas Mueller.
  *
- * C# SharpHsql ADO.NET Provider by Andrés G Vettori.
- * http://workspaces.gotdotnet.com/sharphsql
+ * C# SharpHsql ADO.NET Provider by Andrï¿½s G Vettori.
+ * https://github.com/andresvettori/sharphsql
  */
 #endregion
 
@@ -459,7 +459,7 @@ namespace System.Data.Hsql
 					return "'" + ((DateTime)value).ToString("yyyy.MM.dd HH:mm:ss.fffffff") + "'";
 				case "String":
 				case "Char":
-					return "'" + value.ToString().Replace('\'', '´') + "'";
+					return "'" + value.ToString().Replace('\'', 'ï¿½') + "'";
 				case "Byte[]":
 					return "'" + new ByteArray( (byte[])value ).ToString() + "'";
 				case "Double":

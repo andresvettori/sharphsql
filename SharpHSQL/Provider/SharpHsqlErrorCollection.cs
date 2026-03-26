@@ -37,8 +37,8 @@ using System.Collections;
  *
  * This package is based on HypersonicSQL, originally developed by Thomas Mueller.
  *
- * C# SharpHsql ADO.NET Provider by Andrés G Vettori.
- * http://workspaces.gotdotnet.com/sharphsql
+ * C# SharpHsql ADO.NET Provider by Andrï¿½s G Vettori.
+ * https://github.com/andresvettori/sharphsql
  */
 #endregion
 
