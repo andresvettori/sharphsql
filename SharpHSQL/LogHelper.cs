@@ -5,19 +5,16 @@ using System.Collections;
 using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Reflection;
-using System.Security;
-using System.Security.Permissions;
 using System.IO;
 
-using log4net;
-using log4net.Config;
-using log4net.Core;
+using Serilog;
+using Serilog.Events;
 #endregion
 
 namespace SharpHsql
 {
 	/// <summary>
-	/// Provides static methods that supply helper utilities for logging data whith the ILog object. 
+	/// Provides static methods that supply helper utilities for logging data with the ILogger object. 
 	/// This class cannot be inherited. 
 	/// </summary>
 	/// <author>Andrés G Vettori</author>
@@ -25,23 +22,6 @@ namespace SharpHsql
 	{
 		#region Constants
 
-		//log4net XML constants.
-		
-		/// <summary>
-		/// TargetNamespace.
-		/// </summary>
-		public const string TargetNamespace = "http://log4net.sourceforge.net";
-
-		/// <summary>
-		/// DefaultPrefix.
-		/// </summary>
-		public const string DefaultPrefix = "log4net";
-
-		/// <summary>
-		/// log.
-		/// </summary>
-		public const string RootElement = "log";
-		
 		private static readonly string newLine = Environment.NewLine;
 
 		#endregion Constants
@@ -83,7 +63,7 @@ namespace SharpHsql
 			/// <summary>
 			/// An fatal log. 
 			/// This indicates a fatal problem the user should know about; 
-			/// allways a loss of functionality or data.
+			/// always a loss of functionality or data.
 			/// </summary>
 			Fatal
 		}
@@ -97,31 +77,41 @@ namespace SharpHsql
 
 		static LogHelper()
 		{
-			//Configure log4net
+			//Configure Serilog with default configuration if not already configured
 			try
 			{
-				//If repository is already configured, skip this step.
-				if (!LogManager.GetLoggerRepository(Assembly.GetExecutingAssembly()).Configured)
-					//Look in our assembly same folder or Machine.config'
-					DOMConfigurator.ConfigureAndWatch(new FileInfo(Path.Combine( Path.GetDirectoryName( Assembly.GetExecutingAssembly().Location) , "log4net.config")));
-			} 
-			catch(Exception e)
+				if (Serilog.Log.Logger.GetType().Name == "SilentLogger")
+				{
+					Serilog.Log.Logger = new LoggerConfiguration()
+						.MinimumLevel.Debug()
+						.WriteTo.Console()
+						.WriteTo.File(
+							Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? ".", "logs", "sharphsql-.txt"),
+							rollingInterval: RollingInterval.Day,
+							outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
+						.CreateLogger();
+				}
+			}
+			catch
 			{
-				EventLogHelper.WriteLogEntry(e.Message, EventLogEntryType.Warning);
+				// If configuration fails, use a basic console logger
+				Serilog.Log.Logger = new LoggerConfiguration()
+					.WriteTo.Console()
+					.CreateLogger();
 			}
 		}
 
-		private static string InternalFormattedMessage(string message, Exception exception, Assembly assembly)
+		private static string InternalFormattedMessage(string? message, Exception? exception, Assembly assembly)
 		{
 			return InternalFormattedMessage(message, exception, assembly, true);
 		}
 
-		private static string InternalFormattedMessage(string message, Exception exception, Assembly assembly, bool showStack)
+		private static string InternalFormattedMessage(string? message, Exception? exception, Assembly assembly, bool showStack)
 		{
 			const string TEXT_SEPARATOR = "*********************************************";			
 
 			// Create StringBuilder to maintain publishing information.
-			StringBuilder strInfo = new StringBuilder(String.Concat(newLine, newLine, message, newLine, newLine));
+			StringBuilder strInfo = new StringBuilder(String.Concat(newLine, newLine, message ?? string.Empty, newLine, newLine));
 
 			try
 			{
@@ -132,7 +122,7 @@ namespace SharpHsql
 				
 					if(message == null) message = exception.Message;
 
-					Exception currentException = exception; // Temp variable to hold BaseApplicationException object during the loop.
+					Exception? currentException = exception; // Temp variable to hold Exception object during the loop.
 
 					int intExceptionCount = 1;// Count variable to track the number of exceptions in the chain.
 					
@@ -151,10 +141,10 @@ namespace SharpHsql
 							// captured later in the process.
 							if (!p.Name.Equals("InnerException") && !p.Name.Equals("StackTrace") && !p.Name.Equals("BaseInnerException"))
 							{
-								object prop = null;
+								object? prop = null;
 								try
 								{
-									prop = p.GetValue(currentException,null);
+									prop = p.GetValue(currentException, null);
 								}
 								catch(TargetInvocationException) {}
 
@@ -164,7 +154,7 @@ namespace SharpHsql
 								}
 								else
 								{
-									strInfo.AppendFormat("{0}{1}: {2}", newLine, p.Name, p.GetValue(currentException,null));
+									strInfo.AppendFormat("{0}{1}: {2}", newLine, p.Name, prop);
 								}
 							}
 						}
@@ -190,7 +180,7 @@ namespace SharpHsql
 				}
 
 				strInfo.AppendFormat("{1}Assembly version: {0}{1}RuntimeVersion: {2}{1}Compilation: {3}{1}Assembly file version: {4}", 
-					assembly.GetName().Version.ToString(),
+					assembly.GetName().Version?.ToString() ?? "Unknown",
 					newLine,
 					assembly.ImageRuntimeVersion,
 					ReflexHelper.GetAssemblyConfiguration(assembly),
@@ -198,55 +188,81 @@ namespace SharpHsql
 			}
 			catch (Exception ex)
 			{
-				strInfo.AppendFormat("{0}{0}Exception in PublishException:{4}{0}{1}{0}Original message:{0}{2}{0}Original Exception:{0}{3}", newLine, ex.Message, message, exception.Message, TEXT_SEPARATOR);
+				strInfo.AppendFormat("{0}{0}Exception in PublishException:{4}{0}{1}{0}Original message:{0}{2}{0}Original Exception:{0}{3}", 
+					newLine, ex.Message, message, exception?.Message ?? "null", TEXT_SEPARATOR);
 			}
 			return strInfo.ToString();
 		}
 
-		private static void PublishInternal(string message, Exception exception, LogEntryType exceptionTpe)
+		private static void PublishInternal(string? message, Exception? exception, LogEntryType exceptionType)
 		{
 			//Using the StackTrace object may be tricky on release builds because of inlining optimizations.
 			StackTrace stackTrace = new StackTrace();
-			MemberInfo prevMethodInfo = (MemberInfo)stackTrace.GetFrame(2).GetMethod();
-			Type callertype = prevMethodInfo.ReflectedType;
-			ILog Log = LogHelper.GetLogger(callertype.Assembly, callertype);
+			var methodBase = stackTrace.GetFrame(2)?.GetMethod();
+			if (methodBase == null)
+			{
+				// Fallback if method info is not available
+				Serilog.Log.Write(MapLogLevel(exceptionType), message ?? exception?.Message ?? "Unknown error");
+				return;
+			}
 
-			switch(exceptionTpe)
+			MemberInfo prevMethodInfo = (MemberInfo)methodBase;
+			Type? callertype = prevMethodInfo.ReflectedType;
+
+			if (callertype == null)
+			{
+				// Fallback if type info is not available
+				Serilog.Log.Write(MapLogLevel(exceptionType), InternalFormattedMessage(message, exception, Assembly.GetExecutingAssembly()));
+				return;
+			}
+
+			var formattedMessage = InternalFormattedMessage(message, exception, callertype.Assembly);
+			var logLevel = MapLogLevel(exceptionType);
+
+			// Create a logger with context
+			var logger = Serilog.Log.ForContext("SourceContext", callertype.FullName ?? "Unknown");
+
+			switch(exceptionType)
 			{
 				case LogEntryType.Audit:
-					if(Log.Logger.IsEnabledFor(Level.Notice))
-						Log.Logger.Log(callertype, Level.Notice, 
-							InternalFormattedMessage(message, exception, callertype.Assembly), null);
-					else
-						//fallback log
-						EventLogHelper.WriteLogEntry(InternalFormattedMessage(message, exception, callertype.Assembly), EventLogEntryType.SuccessAudit);
-						
+					logger.Write(LogEventLevel.Information, "[AUDIT] {Message}", formattedMessage);
 					break;					
 				case LogEntryType.Error:
-					if(Log.IsErrorEnabled)
-						Log.Error(InternalFormattedMessage(message, exception, callertype.Assembly));
+					if (exception != null)
+						logger.Error(exception, "{Message}", formattedMessage);
 					else
-						//fallback log
-						EventLogHelper.WriteLogEntry(InternalFormattedMessage(message, exception, callertype.Assembly), EventLogEntryType.Error);
-
+						logger.Error("{Message}", formattedMessage);
 					break;
 				case LogEntryType.Fatal:
-					if(Log.IsFatalEnabled)
-						Log.Fatal(InternalFormattedMessage(message, exception, callertype.Assembly));
+					if (exception != null)
+						logger.Fatal(exception, "{Message}", formattedMessage);
 					else
-						//fallback log
-						EventLogHelper.WriteLogEntry(InternalFormattedMessage(message, exception, callertype.Assembly), EventLogEntryType.Error);
+						logger.Fatal("{Message}", formattedMessage);
 					break;
 				case LogEntryType.Warning:
-					if(Log.IsWarnEnabled) Log.Warn(InternalFormattedMessage(message, exception, callertype.Assembly));
+					logger.Warning("{Message}", formattedMessage);
 					break;
 				case LogEntryType.Debug:
-					if(Log.IsDebugEnabled) Log.Debug(InternalFormattedMessage(message, exception, callertype.Assembly));
+					logger.Debug("{Message}", formattedMessage);
 					break;
 				default:
-					if(Log.IsInfoEnabled) Log.Info(InternalFormattedMessage(message, exception, callertype.Assembly));
+					logger.Information("{Message}", formattedMessage);
 					break;
 			}
+		}
+
+		private static LogEventLevel MapLogLevel(LogEntryType entryType)
+		{
+			return entryType switch
+			{
+				LogEntryType.Audit => LogEventLevel.Information,
+				LogEntryType.Debug => LogEventLevel.Debug,
+				LogEntryType.Information => LogEventLevel.Information,
+				LogEntryType.Warning => LogEventLevel.Warning,
+				LogEntryType.Error => LogEventLevel.Error,
+				LogEntryType.Fatal => LogEventLevel.Fatal,
+				_ => LogEventLevel.Information
+			};
 		}
 
 		#endregion
@@ -255,10 +271,10 @@ namespace SharpHsql
 
 		#region Publish
 		/// <summary>
-		/// Write Exception Info to the ILog interface.
+		/// Write Exception Info to the ILogger interface.
 		/// </summary>
 		/// <remarks>
-		/// For Debugging or Information uses, its faster to use ILog 
+		/// For Debugging or Information uses, it's faster to use ILogger 
 		/// interface directly, instead of this method. 
 		/// </remarks>
 		/// <param name="message">Additional exception info.</param>
@@ -268,7 +284,7 @@ namespace SharpHsql
 		}
 
 		/// <summary>
-		/// Write Exception Info to the ILog interface.
+		/// Write Exception Info to the ILogger interface.
 		/// </summary>
 		/// <param name="exception">Exception object.</param>
 		public static void Publish(Exception exception)
@@ -277,31 +293,31 @@ namespace SharpHsql
 		}
 
 		/// <summary>
-		/// Write Exception Info to the ILog interface.
+		/// Write Exception Info to the ILogger interface.
 		/// </summary>
 		/// <param name="exception">Exception object.</param>
-		/// <param name="exceptionTpe">See <see cref="LogEntryType"/>.</param>
-		public static void Publish(Exception exception, LogEntryType exceptionTpe)
+		/// <param name="exceptionType">See <see cref="LogEntryType"/>.</param>
+		public static void Publish(Exception exception, LogEntryType exceptionType)
 		{
-			PublishInternal(null, exception, exceptionTpe);
+			PublishInternal(null, exception, exceptionType);
 		}
 
 		/// <summary>
-		/// Write Exception Info to the ILog interface.
+		/// Write Exception Info to the ILogger interface.
 		/// </summary>
 		/// <remarks>
-		/// For Debugging or Information uses, its faster to use ILog 
+		/// For Debugging or Information uses, it's faster to use ILogger 
 		/// interface directly, instead of this method. 
 		/// </remarks>
 		/// <param name="message">Additional exception info.</param>
-		/// <param name="exceptionTpe">See <see cref="LogEntryType"/>.</param>
-		public static void Publish(string message, LogEntryType exceptionTpe)
+		/// <param name="exceptionType">See <see cref="LogEntryType"/>.</param>
+		public static void Publish(string message, LogEntryType exceptionType)
 		{
-			PublishInternal(message, null, exceptionTpe);
+			PublishInternal(message, null, exceptionType);
 		}
 
 		/// <summary>
-		/// Write Exception Info to the ILog interface.
+		/// Write Exception Info to the ILogger interface.
 		/// </summary>
 		/// <param name="message">Additional exception info.</param>
 		/// <param name="exception">Exception object.</param>
@@ -311,14 +327,14 @@ namespace SharpHsql
 		}
 
 		/// <summary>
-		/// Write Exception Info to the ILog interface.
+		/// Write Exception Info to the ILogger interface.
 		/// </summary>
 		/// <param name="message">Additional exception info.</param>
 		/// <param name="exception">Exception object.</param>
-		/// <param name="exceptionTpe">See <see cref="LogEntryType"/>.</param>
-		public static void Publish(string message, Exception exception, LogEntryType exceptionTpe)
+		/// <param name="exceptionType">See <see cref="LogEntryType"/>.</param>
+		public static void Publish(string message, Exception exception, LogEntryType exceptionType)
 		{ 
-			PublishInternal(message, exception, exceptionTpe);
+			PublishInternal(message, exception, exceptionType);
 		}
 		
 		#endregion
@@ -326,56 +342,63 @@ namespace SharpHsql
 		#region Logger
 
 		/// <summary>
-		/// Returns a ILog interface for logging services.
-		/// The ILog interface is use by application to log messages into the log4net framework. 
+		/// Returns the global Serilog logger instance.
 		/// </summary>
-		/// <param name="name">The name of the logger to retrieve.</param>
-		/// <returns>The logger with the name specified.</returns>
-		public static ILog GetLogger(string name)
+		/// <returns>The global logger instance.</returns>
+		public static ILogger GetLogger()
 		{
-			return log4net.LogManager.GetLogger(name);
+			return Serilog.Log.Logger;
 		}
 
 		/// <summary>
-		/// Returns a ILog interface for logging services.
-		/// The ILog interface is use by application to log messages into the log4net framework. 
+		/// Returns a Serilog logger with the specified source context.
 		/// </summary>
-		/// <param name="domainAssembly">The assembly that determines the repository domain of the logger.</param>
-		/// <param name="name">The name of the logger to retrieve.</param>
-		/// <returns>The logger with the name specified.</returns>
-		public static ILog GetLogger(Assembly domainAssembly, string name)
+		/// <param name="name">The name of the logger context.</param>
+		/// <returns>A logger with the specified context.</returns>
+		public static ILogger GetLogger(string name)
 		{
-			return log4net.LogManager.GetLogger(domainAssembly, name);
+			return Serilog.Log.ForContext("SourceContext", name);
 		}
 
 		/// <summary>
-		/// Returns a ILog interface for logging services.
-		/// The ILog interface is use by application to log messages into the log4net framework. 
+		/// Returns a Serilog logger with the specified type as context.
 		/// </summary>
-		/// <param name="type">The type that will be used as the name of the logger to retrieve.</param>
-		/// <returns>The logger with the name specified.</returns>
-		public static ILog GetLogger(Type type)
+		/// <param name="type">The type that will be used as the name of the logger context.</param>
+		/// <returns>A logger with the specified type context.</returns>
+		public static ILogger GetLogger(Type type)
 		{
-			return log4net.LogManager.GetLogger(type);
+			return Serilog.Log.ForContext(type);
 		}
 
 		/// <summary>
-		/// Returns a ILog interface for logging services.
-		/// The ILog interface is use by application to log messages into the log4net framework. 
+		/// Returns a Serilog logger with the specified type as context.
 		/// </summary>
-		/// <param name="domainAssembly">The assembly that determines the repository domain of the logger.</param>
-		/// <param name="type">The type that will be used as the name of the logger to retrieve.</param>
-		/// <returns>The logger with the name specified.</returns>
-		public static ILog GetLogger(Assembly domainAssembly, Type type)
+		/// <param name="domainAssembly">The assembly (for compatibility - not used in Serilog).</param>
+		/// <param name="type">The type that will be used as the name of the logger context.</param>
+		/// <returns>A logger with the specified type context.</returns>
+		public static ILogger GetLogger(Assembly domainAssembly, Type type)
 		{
-			return log4net.LogManager.GetLogger(domainAssembly, type);
+			// Assembly parameter kept for API compatibility
+			return Serilog.Log.ForContext(type);
+		}
+
+		/// <summary>
+		/// Returns a Serilog logger with the specified source context.
+		/// </summary>
+		/// <param name="domainAssembly">The assembly (for compatibility - not used in Serilog).</param>
+		/// <param name="name">The name of the logger context.</param>
+		/// <returns>A logger with the specified context.</returns>
+		public static ILogger GetLogger(Assembly domainAssembly, string name)
+		{
+			// Assembly parameter kept for API compatibility
+			return Serilog.Log.ForContext("SourceContext", name);
 		}
 
 		#endregion
 
 		#region FormattedMessage
 		/// <summary>
-		/// Gets the Exception Info to be writen to the Log.
+		/// Gets the Exception Info to be written to the Log.
 		/// </summary>
 		/// <param name="exception">Exception object.</param>
 		public static string FormattedMessage(Exception exception)
@@ -384,17 +407,17 @@ namespace SharpHsql
 		}
 
 		/// <summary>
-		/// Gets the Exception Info to be writen to the Log.
+		/// Gets the Exception Info to be written to the Log.
 		/// </summary>
 		/// <param name="exception">Exception object.</param>
-		/// <param name="showStack">True, show all the stack trace inf.</param>
+		/// <param name="showStack">True, show all the stack trace info.</param>
 		public static string FormattedMessage(Exception exception, bool showStack)
 		{
 			return InternalFormattedMessage(null, exception, Assembly.GetCallingAssembly(), showStack);
 		}
 
 		/// <summary>
-		/// Gets the Exception Info to be writen to the Log.
+		/// Gets the Exception Info to be written to the Log.
 		/// </summary>
 		/// <param name="message">Additional exception info.</param>
 		/// <param name="exception">Exception object.</param>
@@ -404,11 +427,11 @@ namespace SharpHsql
 		}
 
 		/// <summary>
-		/// Gets the Exception Info to be writen to the Log.
+		/// Gets the Exception Info to be written to the Log.
 		/// </summary>
 		/// <param name="message">Additional exception info.</param>
 		/// <param name="exception">Exception object.</param>
-		/// <param name="showStack">True, show all the stack trace inf.</param>
+		/// <param name="showStack">True, show all the stack trace info.</param>
 		public static string FormattedMessage(string message, Exception exception, bool showStack)
 		{
 			return InternalFormattedMessage(message, exception, Assembly.GetCallingAssembly(), showStack);

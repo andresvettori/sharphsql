@@ -8,6 +8,7 @@ using System.Collections;
  * Channel.cs
  *
  * Copyright (c) 2001, The HSQL Development Group
+ * Copyright (c) 2026, Andrés G Vettori (Transaction-aware logging enhancements)
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -39,7 +40,7 @@ using System.Collections;
  *
  * C# port by Mark Tutt
  * C# SharpHsql by Andrés G Vettori.
- * http://workspaces.gotdotnet.com/sharphsql
+ * https://github.com/andresvettori/sharphsql
  */
 #endregion
 
@@ -51,24 +52,26 @@ namespace SharpHsql
 	/// <remarks>version 1.0.0.1</remarks>
 	public sealed class Channel : IDisposable
 	{
-		#region Private Vars
+	#region Private Vars
 
-		private Database	_database;
-		private User		_user;
-		private ArrayList   _transaction;
-		private bool		_autoCommit;
-		private bool		_nestedTransaction;
-		private bool		_nestedOldAutoCommit;
-		private int			_nestedOldTransIndex;
-		private bool		_readOnly;
-		private int			_maxRows;
-		private int			_lastIdentity;
-		private bool		_closed;
-		private int			_id;
-		private bool		_disposed;
-		private Hashtable	_variables;
+	private Database	_database;
+	private User		_user;
+	private ArrayList   _transaction;
+	private bool		_autoCommit;
+	private bool		_nestedTransaction;
+	private bool		_nestedOldAutoCommit;
+	private int			_nestedOldTransIndex;
+	private int			_nestedOldBufferIndex;
+	private bool		_readOnly;
+	private int			_maxRows;
+	private int			_lastIdentity;
+	private bool		_closed;
+	private int			_id;
+	private bool		_disposed;
+	private Hashtable	_variables;
+	private ArrayList   _uncommittedStatements;
 
-		#endregion
+	#endregion
 
 		#region Constructors
 
@@ -79,6 +82,7 @@ namespace SharpHsql
 		{
 			_variables = Hashtable.Synchronized( new Hashtable() );
 			_transaction = new ArrayList();
+			_uncommittedStatements = new ArrayList();
 		}
 
 		/// <summary>
@@ -247,6 +251,9 @@ namespace SharpHsql
 		{
 			Trace.Check(!_closed, Trace.CONNECTION_IS_CLOSED);
 
+			// Flush buffered statements to log before clearing transactions
+			FlushBufferedStatements();
+
 			_transaction.Clear();
 		}
 
@@ -256,6 +263,9 @@ namespace SharpHsql
 		public void Rollback() 
 		{
 			Trace.Check(!_closed, Trace.CONNECTION_IS_CLOSED);
+
+			// Clear buffered statements without writing them
+			ClearBufferedStatements();
 
 			int i = _transaction.Count - 1;
 
@@ -484,6 +494,7 @@ namespace SharpHsql
 			// now all transactions are logged
 			_autoCommit = false;
 			_nestedOldTransIndex = _transaction.Count;
+			_nestedOldBufferIndex = _uncommittedStatements != null ? _uncommittedStatements.Count : 0;
 			_nestedTransaction = true;
 		}
 
@@ -509,6 +520,15 @@ namespace SharpHsql
 
 					i--;
 				}
+
+				// Also rollback buffered statements from this nested transaction
+				if (_uncommittedStatements != null && _uncommittedStatements.Count > _nestedOldBufferIndex)
+				{
+					_uncommittedStatements.RemoveRange(
+						_nestedOldBufferIndex, 
+						_uncommittedStatements.Count - _nestedOldBufferIndex
+					);
+				}
 			}
 
 			_nestedTransaction = false;
@@ -516,6 +536,8 @@ namespace SharpHsql
 
 			if (_autoCommit == true) 
 			{
+				// Flush buffered statements when returning to auto-commit
+				FlushBufferedStatements();
 				_transaction.RemoveRange(_nestedOldTransIndex,(_transaction.Count - _nestedOldTransIndex));
 			}
 		}
@@ -531,6 +553,62 @@ namespace SharpHsql
 				Trace.Check(!_closed, Trace.CONNECTION_IS_CLOSED);
 
 				return _nestedTransaction;
+			}
+		}
+
+		/// <summary>
+		/// Returns True if the channel is in auto-commit mode.
+		/// </summary>
+		internal bool IsAutoCommit()
+		{
+			Trace.Check(!_closed, Trace.CONNECTION_IS_CLOSED);
+			
+			return _autoCommit;
+		}
+
+		/// <summary>
+		/// Buffers a SQL statement for later commit (when not in auto-commit mode).
+		/// </summary>
+		/// <param name="statement">The SQL statement to buffer</param>
+		internal void BufferStatement(string statement)
+		{
+			Trace.Check(!_closed, Trace.CONNECTION_IS_CLOSED);
+			
+			if (!_autoCommit && _uncommittedStatements != null)
+			{
+				_uncommittedStatements.Add(statement);
+			}
+		}
+
+		/// <summary>
+		/// Flushes all buffered uncommitted statements to the log file.
+		/// This is called during COMMIT or when DDL statements trigger implicit commit.
+		/// </summary>
+		internal void FlushBufferedStatements()
+		{
+			Trace.Check(!_closed, Trace.CONNECTION_IS_CLOSED);
+			
+			if (_uncommittedStatements != null && _uncommittedStatements.Count > 0)
+			{
+				foreach (string statement in _uncommittedStatements)
+				{
+					_database.Log.WriteDirectly(this, statement);
+				}
+				_uncommittedStatements.Clear();
+			}
+		}
+
+		/// <summary>
+		/// Clears all buffered uncommitted statements without writing them.
+		/// This is called during ROLLBACK.
+		/// </summary>
+		internal void ClearBufferedStatements()
+		{
+			Trace.Check(!_closed, Trace.CONNECTION_IS_CLOSED);
+			
+			if (_uncommittedStatements != null)
+			{
+				_uncommittedStatements.Clear();
 			}
 		}
 	

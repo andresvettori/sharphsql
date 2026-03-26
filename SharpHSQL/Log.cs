@@ -12,6 +12,7 @@ using System.Reflection;
  * Log.cs
  *
  * Copyright (c) 2001, The HSQL Development Group
+ * Copyright (c) 2026, Andrés G Vettori (PID-based locking and transaction-aware logging)
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -43,7 +44,7 @@ using System.Reflection;
  *
  * C# port by Mark Tutt
  * C# SharpHsql by Andrés G Vettori.
- * http://workspaces.gotdotnet.com/sharphsql
+ * https://github.com/andresvettori/sharphsql
  */
 #endregion
 
@@ -95,6 +96,7 @@ namespace SharpHsql
 		private string	           sFileScript;
 		private string	           sFileCache;
 		private string	           sFileBackup;
+		private string	           sFileLock;
 		private string			   sModified;
 		private string			   sVersion;
 		private bool	           bRestoring;
@@ -124,6 +126,7 @@ namespace SharpHsql
 			sFileScript = sName + ".log";
 			sFileCache = sName + ".data";
 			sFileBackup = sName + ".backup";
+			sFileLock = sName + ".lck";
 		}
 
 		/// <summary>
@@ -352,10 +355,81 @@ namespace SharpHsql
 
 		/// <summary>
 		/// Writes a SQL statement to the transaction log.
+		/// Implements transaction-aware logging: statements are buffered when autoCommit=false
+		/// and only written to disk on COMMIT.
 		/// </summary>
 		/// <param name="channel"></param>
 		/// <param name="s"></param>
 		public void Write(Channel channel, string s) 
+		{
+			if (bRestoring || s == null || s.Equals("")) 
+				return;
+
+			if (!bReadOnly) 
+			{
+				string upperStatement = s.Trim().ToUpper();
+				
+				// Handle COMMIT - flush buffered statements then write COMMIT
+				if (upperStatement.StartsWith("COMMIT"))
+				{
+					if (channel != null && !channel.IsAutoCommit())
+					{
+						channel.FlushBufferedStatements();
+					}
+					WriteDirectly(channel, s);
+					return;
+				}
+				
+				// Handle ROLLBACK - clear buffer then write ROLLBACK
+				if (upperStatement.StartsWith("ROLLBACK"))
+				{
+					if (channel != null && !channel.IsAutoCommit())
+					{
+						channel.ClearBufferedStatements();
+					}
+					WriteDirectly(channel, s);
+					return;
+				}
+
+				// Handle DDL statements (auto-commit behavior)
+				bool isDDL = upperStatement.StartsWith("CREATE ") ||
+				             upperStatement.StartsWith("ALTER ") ||
+				             upperStatement.StartsWith("DROP ") ||
+				             upperStatement.StartsWith("TRUNCATE ");
+				
+				if (isDDL)
+				{
+					// DDL causes implicit COMMIT
+					if (channel != null && !channel.IsAutoCommit())
+					{
+						// Flush any pending statements first
+						channel.FlushBufferedStatements();
+					}
+					
+					// Write DDL immediately
+					WriteDirectly(channel, s);
+					return;
+				}
+
+				// Handle DML in transaction mode - buffer instead of writing
+				if (channel != null && !channel.IsAutoCommit())
+				{
+					channel.BufferStatement(s);
+					return;
+				}
+				
+				// Auto-commit mode or system channel: write immediately
+				WriteDirectly(channel, s);
+			}
+		}
+
+		/// <summary>
+		/// Writes a SQL statement directly to the transaction log without buffering.
+		/// Used internally to flush buffered statements during COMMIT.
+		/// </summary>
+		/// <param name="channel"></param>
+		/// <param name="s"></param>
+		internal void WriteDirectly(Channel channel, string s) 
 		{
 			if (bRestoring || s == null || s.Equals("")) 
 				return;
@@ -390,11 +464,11 @@ namespace SharpHsql
 				catch (IOException e) 
 				{
 					Trace.Error(Trace.FILE_IO_ERROR, sFileScript);
-					LogHelper.Publish( "Unexpected error on Write.", e );
+					LogHelper.Publish( "Unexpected error on WriteDirectly.", e );
 				}
 				catch( Exception e )
 				{
-					LogHelper.Publish( "Unexpected error on Write.", e );	
+					LogHelper.Publish( "Unexpected error on WriteDirectly.", e );	
 				}
 
 				lock( SyncLock )
@@ -415,13 +489,16 @@ namespace SharpHsql
 		/// <summary>
 		/// Shutdown the transaction log.
 		/// </summary>
-		public void Shutdown() 
+		public void Shutdown()
 		{
 			Stop();
 
 			cCache.Shutdown();
 			CloseScript();
 			CloseProperties();
+			
+			// Extra safety: ensure lock file is deleted
+			DeleteLockFile();
 		}
 
 		/// <summary>
@@ -580,31 +657,129 @@ namespace SharpHsql
 
 
 		/// <summary>
-		/// Checks if the database is already open.
+		/// Creates a lock file with the current process ID.
 		/// </summary>
-		/// <returns>True if the databse file is open.</returns>
+		private void CreateLockFile()
+		{
+			try 
+			{
+				int pid = System.Diagnostics.Process.GetCurrentProcess().Id;
+				File.WriteAllText(sFileLock, pid.ToString());
+				LogHelper.Publish($"Lock file created: {sFileLock} (PID: {pid})");
+			}
+			catch (Exception e)
+			{
+				LogHelper.Publish("Warning: Could not create lock file", e);
+			}
+		}
+
+		/// <summary>
+		/// Deletes the lock file.
+		/// </summary>
+		private void DeleteLockFile()
+		{
+			try 
+			{
+				if (File.Exists(sFileLock))
+				{
+					File.Delete(sFileLock);
+					LogHelper.Publish($"Lock file deleted: {sFileLock}");
+				}
+			}
+			catch (Exception e)
+			{
+				LogHelper.Publish("Warning: Could not delete lock file", e);
+			}
+		}
+
+		/// <summary>
+		/// Checks if a process with the given PID is still running.
+		/// </summary>
+		/// <param name="pid">Process ID to check</param>
+		/// <returns>True if process is alive, false otherwise</returns>
+		private bool IsProcessAlive(int pid)
+		{
+			try 
+			{
+				var process = System.Diagnostics.Process.GetProcessById(pid);
+				return !process.HasExited;
+			}
+			catch (ArgumentException)
+			{
+				// Process does not exist
+				return false;
+			}
+			catch (Exception)
+			{
+				// Other errors - assume not alive for safety
+				return false;
+			}
+		}
+
+		/// <summary>
+		/// Checks if the lock file is stale (owned by a dead process) and removes it if so.
+		/// </summary>
+		/// <returns>True if lock was stale and removed, false otherwise</returns>
+		private bool IsLockFileStale()
+		{
+			if (!File.Exists(sFileLock))
+				return false; // No lock file = not stale
+
+			try 
+			{
+				string pidStr = File.ReadAllText(sFileLock).Trim();
+				if (int.TryParse(pidStr, out int pid))
+				{
+					if (!IsProcessAlive(pid))
+					{
+						LogHelper.Publish($"Stale lock detected: PID {pid} is not running. Auto-removing lock.");
+						DeleteLockFile();
+						return true;
+					}
+					return false; // Process is alive, lock is valid
+				}
+				
+				// Invalid PID format - assume stale
+				LogHelper.Publish("Lock file has invalid PID format. Auto-removing lock.");
+				DeleteLockFile();
+				return true;
+			}
+			catch (Exception e)
+			{
+				LogHelper.Publish("Error reading lock file. Auto-removing lock.", e);
+				DeleteLockFile();
+				return true;
+			}
+		}
+
+		/// <summary>
+		/// Checks if the database is already open by another process.
+		/// Uses PID-based lock file detection with automatic stale lock cleanup.
+		/// </summary>
+		/// <returns>True if the database is open by another process</returns>
 		private bool IsAlreadyOpen() 
 		{
 			if (Trace.TraceEnabled) 
 				Trace.Write();
 
-			FileStream fs = null;
+			// Check for stale lock and auto-remove if needed
+			IsLockFileStale();
 
-			try
+			// Now check if lock file still exists (after stale check)
+			if (File.Exists(sFileLock))
 			{
-				// try to open the log file exclusively for writing
-				fs = new FileStream(sFileScript, FileMode.Append, FileAccess.Write, FileShare.None);
-			}
-			catch( Exception )
-			{
-				return true;
-			}
-			finally 
-			{
-				if( fs != null )
+				try 
 				{
-					fs.Close();
-					fs = null;
+					string pidStr = File.ReadAllText(sFileLock).Trim();
+					if (int.TryParse(pidStr, out int pid))
+					{
+						LogHelper.Publish($"Database is in use by process {pid}");
+						return true;
+					}
+				}
+				catch (Exception e)
+				{
+					LogHelper.Publish("Error checking lock file", e);
 				}
 			}
 
@@ -813,6 +988,9 @@ namespace SharpHsql
 
 			try 
 			{
+				// CREATE LOCK FILE FIRST
+				CreateLockFile();
+
 				// opens the log file exclusively for writing
 				_file = new FileStream(sFileScript, FileMode.Append, FileAccess.Write, FileShare.None);
 
@@ -826,6 +1004,8 @@ namespace SharpHsql
 			} 
 			catch (Exception e) 
 			{
+				// If opening fails, remove lock file
+				DeleteLockFile();
 				LogHelper.Publish( "Unexpected error on OpenScript.", e );
 				Trace.Error(Trace.FILE_IO_ERROR, sFileScript);
 			}
@@ -850,6 +1030,9 @@ namespace SharpHsql
 
 					_file = null;
 				}
+
+				// DELETE LOCK FILE
+				DeleteLockFile();
 			} 
 			catch (Exception e) 
 			{

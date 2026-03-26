@@ -55,9 +55,9 @@ namespace SharpHsql
 		/// <summary>
 		/// Reference to the appropriate logger.
 		/// </summary>
-		static readonly log4net.ILog Logger = log4net.LogManager.GetLogger(typeof(StringConverter));
+		static readonly Serilog.ILogger Logger = LogHelper.GetLogger(typeof(StringConverter));
 
-		private static char[]   HEXCHAR = 
+		private static char[]   HEXCHAR =
 		{
 			'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'
 		};
@@ -114,7 +114,7 @@ namespace SharpHsql
 			} 
             catch (Exception e)
 			{
-				if( Logger.IsErrorEnabled ) Logger.Error( "Unexpected error on unicodeToHexstring.", e );
+				Logger.Error(e, "Unexpected error on unicodeToHexstring.");
 				return null;
 			}
 
@@ -133,7 +133,7 @@ namespace SharpHsql
 			}
             catch (Exception e)
 			{
-				if( Logger.IsErrorEnabled ) Logger.Error( "Unexpected error on hexstringToUnicode.", e );
+				Logger.Error(e, "Unexpected error on hexstringToUnicode.");
 				return null;
 			}
 		}
