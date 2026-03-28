@@ -56,3 +56,5 @@ using System.Runtime.CompilerServices;
 [assembly: ComVisible(false)]
 [assembly: CLSCompliant(true)]
 
+
+[assembly: AssemblyInformationalVersion("2.0.0+Branch.main.Sha.60810d2767a9a93f1eb676d28fad89318ee04ab0")]

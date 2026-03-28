@@ -9,10 +9,30 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <SignAssembly>true</SignAssembly>
     <AssemblyOriginatorKeyFile>KeyPair.snk</AssemblyOriginatorKeyFile>
-    <DelaySign>true</DelaySign>
+    <DelaySign>false</DelaySign>
+    <PublicSign Condition="'$(OS)' != 'Windows_NT'">true</PublicSign>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    
+    <!-- NuGet Package Metadata -->
+    <PackageId>SharpHsql.Core</PackageId>
+    <Title>SharpHSQL Core - Embedded SQL Database</Title>
+    <Authors>Andres G Vettori</Authors>
+    <Company>Andres G Vettori</Company>
+    <Product>SharpHSQL</Product>
+    <Description>SharpHSQL is a lightweight, embedded SQL database engine for .NET, ported from HSQLDB. It provides full ACID compliance with in-memory and file-based storage options, supports a rich SQL syntax including joins, subqueries, and transactions, and includes both a native API and ADO.NET provider for seamless integration.</Description>
+    <PackageTags>database;sql;embedded;in-memory;hsqldb;ado.net;lightweight;acid;transactions;netstandard</PackageTags>
+    <PackageProjectUrl>https://github.com/andresvettori/sharphsql</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/andresvettori/sharphsql.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
+    <Copyright>Copyright (c) 2026 Andres G Vettori</Copyright>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>See CHANGELOG.md for release notes</PackageReleaseNotes>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
@@ -23,8 +43,8 @@
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
-    <DebugType>none</DebugType>
-    <DebugSymbols>false</DebugSymbols>
+    <DebugType>portable</DebugType>
+    <DebugSymbols>true</DebugSymbols>
     <Optimize>true</Optimize>
   </PropertyGroup>
 
@@ -36,6 +56,7 @@
 
   <ItemGroup>
     <None Include="KeyPair.snk" />
+    <None Include="..\README.md" Pack="true" PackagePath="\" Condition="Exists('..\README.md')" />
   </ItemGroup>
 
   <ItemGroup>
